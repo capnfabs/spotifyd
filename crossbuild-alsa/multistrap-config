@@ -1,0 +1,13 @@
+[General]
+arch=armhf
+directory=/build/armhf-sysroot/
+aptsources=Raspbian
+debootstrap=Raspbian
+noauth=true
+unpack=true
+cleanup=true
+
+[Raspbian]
+packages=libasound2-dev libdbus-1-dev libssl-dev libc6-dev
+source=http://raspbian.raspberrypi.org/raspbian/
+suite=buster

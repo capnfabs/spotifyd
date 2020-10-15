@@ -515,6 +515,11 @@ fn create_dbus_server(
                                 .map_or("", |(_, v)| &v)
                                 .to_string()
                         )) as Box<dyn RefArg>));
+                    if let Some(context) = playing.context {
+                        m.insert("spotifyd:contexturi".to_string(), Variant(Box::new(
+                            MessageItem::Str(context.uri)
+                        )));
+                    }
                 }
             } else {
                 info!("Couldn't fetch metadata from spotify: {:?}", v);
