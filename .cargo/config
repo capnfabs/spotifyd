@@ -2,11 +2,7 @@
 
 # Specifies that the default target is ARMv7.
 target = "armv7-unknown-linux-gnueabihf"
-rustflags=["-C", "link-args=--sysroot=/build/armhf-sysroot"]
+rustflags=["-C", "link-args=--sysroot=/build/armhf-sysroot", "-C", "link-args=-Wl,-v"]
 
 [target.armv7-unknown-linux-gnueabihf.dbus]
-#rustc-link-search = [
-#    "/build/sysroot/lib/arm-linux-gnueabihf/",
-#    "/build/sysroot/usr/lib/arm-linux-gnueabihf/",
-#]
 rustc-link-lib = ["dbus-1"]

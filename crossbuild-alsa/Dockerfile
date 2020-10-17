@@ -11,6 +11,9 @@ COPY multistrap-config /
 RUN multistrap -a armhf -f multistrap-config /build/armhf-sysroot/
 RUN rm multistrap-config
 
+COPY relink.sh /
+RUN cd /build/armhf-sysroot && /relink.sh
+
 # Here's the reference value, taken from `pkg-config --variable pc_path pkg-config`
 # See https://askubuntu.com/questions/210210/pkg-config-path-environment-variable
 # Then replace any arch-specific values with the new architecture.
