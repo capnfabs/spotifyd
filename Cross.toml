@@ -1,2 +1,2 @@
 [target.armv7-unknown-linux-gnueabihf]
-image = "crossbuild:4"
+image = "crossbuild:local"
