@@ -1,8 +1,11 @@
 [build]
 
 # Specifies that the default target is ARMv7.
+# Oof, this is proper complicated: https://doc.rust-lang.org/cargo/reference/config.html#buildrustflags
 target = "armv7-unknown-linux-gnueabihf"
-rustflags=["-C", "link-args=--sysroot=/build/armhf-sysroot", "-C", "link-args=-Wl,-v"]
+
+[target.armv7-unknown-linux-gnueabihf]
+rustflags=["-C", "link-args=--sysroot=/build/armhf-sysroot", "-C",  "-C", "link-args=-Wl,-v"]
 
 [target.armv7-unknown-linux-gnueabihf.dbus]
 rustc-link-lib = ["dbus-1"]

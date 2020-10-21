@@ -6,7 +6,7 @@ FROM rustembedded/cross:armv7-unknown-linux-gnueabihf-0.2.1
 #RUN apt-key adv --fetch-keys http://raspbian.raspberrypi.org/raspbian.public.key
 
 RUN apt-get update
-RUN apt-get install --assume-yes multistrap
+RUN apt-get install --assume-yes multistrap symlinks
 COPY multistrap-config /
 RUN multistrap -a armhf -f multistrap-config /build/armhf-sysroot/
 RUN rm multistrap-config
@@ -22,6 +22,10 @@ RUN cd /build/armhf-sysroot && /relink.sh
 # TODO
 ENV PKG_CONFIG_SYSROOT_DIR=/build/armhf-sysroot
 ENV PKG_CONFIG_LIBDIR=/build/armhf-sysroot/usr/lib/arm-linux-gnueabihf/pkgconfig
+# This is necessary for OpenSSL but breaks everything else.
+# We need a way to do this *just* for the OpenSSL config file, but *not* for
+# everything else (because I *think* the compiler version in use on the host
+# arch is different from the libraries in use on the target, so if we do it for everything else, we'll get rando breakages).
 ENV CPATH=/build/armhf-sysroot/usr/include/arm-linux-gnueabihf
 
 # TODO
