@@ -5,4 +5,4 @@ RUN dpkg --add-architecture armhf && \
     apt-get update && \
     apt-get install --assume-yes libssl-dev:armhf libasound2-dev:armhf libdbus-1-dev:armhf libsystemd-dev:armhf
 
-ENV PKG_CONFIG_LIBDIR=/usr/lib/arm-linux-gnueabihf/pkgconfig
+ENV PKG_CONFIG_LIBDIR_armv7_unknown_linux_gnueabihf=/usr/lib/arm-linux-gnueabihf/pkgconfig
