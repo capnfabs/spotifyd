@@ -128,10 +128,12 @@ impl From<LSDeviceType> for DeviceType {
             LSDeviceType::Tablet => DeviceType::Tablet,
             LSDeviceType::Smartphone => DeviceType::Smartphone,
             LSDeviceType::Speaker => DeviceType::Speaker,
-            LSDeviceType::TV => DeviceType::TV,
-            LSDeviceType::AVR => DeviceType::AVR,
-            LSDeviceType::STB => DeviceType::STB,
+            LSDeviceType::Tv => DeviceType::TV,
+            LSDeviceType::Avr => DeviceType::AVR,
+            LSDeviceType::Stb => DeviceType::STB,
             LSDeviceType::AudioDongle => DeviceType::AudioDongle,
+            // TODO: implement
+            _ => DeviceType::Unknown
         }
     }
 }
@@ -144,10 +146,11 @@ impl From<&DeviceType> for LSDeviceType {
             DeviceType::Tablet => LSDeviceType::Tablet,
             DeviceType::Smartphone => LSDeviceType::Smartphone,
             DeviceType::Speaker => LSDeviceType::Speaker,
-            DeviceType::TV => LSDeviceType::TV,
-            DeviceType::AVR => LSDeviceType::AVR,
-            DeviceType::STB => LSDeviceType::STB,
+            DeviceType::TV => LSDeviceType::Tv,
+            DeviceType::AVR => LSDeviceType::Avr,
+            DeviceType::STB => LSDeviceType::Stb,
             DeviceType::AudioDongle => LSDeviceType::AudioDongle,
+            // TODO: implement
         }
     }
 }
@@ -419,7 +422,7 @@ impl fmt::Debug for SharedConfigValues {
                     None => None,
                 }
             };
-        };
+        }
 
         let password_value = extract_credential!(&self.password);
 
@@ -576,7 +579,10 @@ pub(crate) fn get_internal_config(config: CliConfig) -> SpotifydConfig {
         .shared_config
         .cache_path
         .map(PathBuf::from)
-        .map(|path| Cache::new(path, audio_cache));
+        // TODO: plumb size limits, check audio_cache?
+        .map(|path| Cache::new(Some(path.clone()),  if audio_cache {Some(path.clone())} else {None}, None))
+        // TODO: unwrap unwrap is mega gross.
+        .unwrap().unwrap();
 
     let bitrate: LSBitrate = config
         .shared_config

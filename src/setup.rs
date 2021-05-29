@@ -91,7 +91,6 @@ pub(crate) fn initial_state(
 
     #[allow(clippy::or_fun_call)]
     let discovery_stream = discovery(
-        &handle,
         ConnectConfig {
             autoplay,
             name: config.device_name.clone(),
@@ -132,11 +131,10 @@ pub(crate) fn initial_state(
             session_config.clone(),
             credentials,
             cache.clone(),
-            handle.clone(),
         )
     } else {
-        Box::new(futures::future::empty())
-            as Box<dyn futures::Future<Item = Session, Error = io::Error>>
+        Box::new(futures::future::pending())
+            as Box<dyn futures::Future<Output=Result<Session,io::Error>>>
     };
 
     let backend = find_backend(backend.as_ref().map(String::as_ref));
