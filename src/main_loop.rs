@@ -1,5 +1,5 @@
 #[cfg(feature = "dbus_mpris")]
-use crate::dbus_mpris::DbusServer;
+use crate::dbus_mpris::dbus_server_2;
 use crate::process::{spawn_program_on_event, Child};
 use futures::{self, Future, Stream, StreamExt};
 use librespot::{
@@ -62,7 +62,7 @@ pub struct SpotifydState {
     pub device_name: String,
     pub player_event_channel: Option<Pin<Box<dyn Stream<Item=PlayerEvent>>>>,
     pub player_event_program: Option<String>,
-    pub dbus_mpris_server: Option<Pin<Box<dyn Future<Output=()>>>>,
+    pub dbus_mpris_server: Option<Pin<Box<dyn Future<Output=Result<(), Box<dyn std::error::Error>>>>>>,
 }
 
 #[cfg(feature = "dbus_mpris")]
@@ -71,8 +71,8 @@ fn new_dbus_server(
     session: Session,
     spirc: Rc<Spirc>,
     device_name: String,
-) -> Option<Pin<Box<dyn Future<Output=()>>>> {
-    Some(Box::pin(DbusServer::new(
+) -> Option<Pin<Box<dyn Future<Output=Result<(), Box<dyn std::error::Error>>>>>> {
+    Some(Box::pin(dbus_server_2(
         session,
         spirc,
         device_name,

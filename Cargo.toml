@@ -11,6 +11,7 @@ version = "0.3.2"
 alsa = { version = "0.5", optional = true }
 chrono = "0.4"
 daemonize = "0.4"
+dbus = {version = "0.9.2", optional = true }
 dbus-tokio = { version = "0.7.3", optional = true }
 dbus-crossroads = { version = "0.3", optional = true }
 fern = { version = "0.6.0", features = ["syslog-4"] }
@@ -44,7 +45,7 @@ env_logger = "0.7"
 [features]
 alsa_backend = ["librespot/alsa-backend", "alsa"]
 dbus_keyring = ["keyring"]
-dbus_mpris = ["dbus-tokio", "dbus-crossroads"]
+dbus_mpris = ["dbus", "dbus-tokio", "dbus-crossroads"]
 default = ["alsa_backend"]
 portaudio_backend = ["librespot/portaudio-backend"]
 pulseaudio_backend = ["librespot/pulseaudio-backend"]
