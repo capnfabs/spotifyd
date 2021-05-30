@@ -1,14 +1,12 @@
 #[cfg(feature = "alsa_backend")]
 use crate::alsa_mixer;
 use crate::{config, main_loop};
-use futures::{self, Future};
 #[cfg(feature = "dbus_keyring")]
 use keyring::Keyring;
 use librespot::{
     connect::discovery::discovery,
     core::{
-        authentication::get_credentials,
-        cache::Cache,
+        authentication::Credentials,
         config::{ConnectConfig, DeviceType, VolumeCtrl},
         session::Session,
     },
@@ -17,14 +15,12 @@ use librespot::{
         mixer::{self, Mixer},
     },
 };
-use log::{error, info};
+use log::{info};
 use std::str::FromStr;
-use std::{io, process::exit};
-use tokio_core::reactor::Handle;
-use tokio_signal::ctrl_c;
+use tokio::signal::ctrl_c;
+use librespot::playback::config::AudioFormat;
 
 pub(crate) fn initial_state(
-    handle: Handle,
     config: config::SpotifydConfig,
 ) -> main_loop::MainLoopState {
     #[cfg(feature = "alsa_backend")]
@@ -118,35 +114,27 @@ pub(crate) fn initial_state(
         }
     }
 
-    let connection = if let Some(credentials) = get_credentials(
-        username,
-        password,
-        cache.as_ref().and_then(Cache::credentials),
-        |_| {
-            error!("No password found.");
-            exit(1);
-        },
-    ) {
-        Session::connect(
-            session_config.clone(),
-            credentials,
-            cache.clone(),
-        )
-    } else {
-        Box::new(futures::future::pending())
-            as Box<dyn futures::Future<Output=Result<Session,io::Error>>>
-    };
+    let credentials = Credentials::with_password(
+        // TODO: rework this
+        username.unwrap(),
+        password.unwrap(),
+    );
+    let connection = Session::connect(
+        session_config.clone(),
+        credentials,
+        cache.clone(),
+    );
 
     let backend = find_backend(backend.as_ref().map(String::as_ref));
     main_loop::MainLoopState {
-        librespot_connection: main_loop::LibreSpotConnection::new(connection, discovery_stream),
+        librespot_connection: main_loop::LibreSpotConnection::new(Box::pin(connection), discovery_stream),
         audio_setup: main_loop::AudioSetup {
             mixer,
             backend,
             audio_device: config.audio_device.clone(),
         },
         spotifyd_state: main_loop::SpotifydState {
-            ctrl_c_stream: Box::new(ctrl_c(&handle).flatten_stream()),
+            ctrl_c_stream: Box::pin(ctrl_c()),
             shutting_down: false,
             cache,
             device_name: config.device_name,
@@ -156,7 +144,6 @@ pub(crate) fn initial_state(
         },
         player_config,
         session_config,
-        handle,
         initial_volume: config.initial_volume,
         volume_ctrl,
         running_event_program: None,
@@ -167,7 +154,7 @@ pub(crate) fn initial_state(
     }
 }
 
-fn find_backend(name: Option<&str>) -> fn(Option<String>) -> Box<dyn Sink> {
+fn find_backend(name: Option<&str>) -> fn(Option<String>, AudioFormat) -> Box<dyn Sink> {
     match name {
         Some(name) => {
             BACKENDS

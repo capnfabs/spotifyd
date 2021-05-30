@@ -6,7 +6,7 @@ use daemonize::Daemonize;
 use log::{error, info, trace, LevelFilter};
 use std::panic;
 use structopt::StructOpt;
-use tokio_core::reactor::Core;
+use tokio::runtime::Runtime;
 
 #[cfg(feature = "alsa_backend")]
 mod alsa_mixer;
@@ -90,25 +90,12 @@ fn main() -> Result<(), Report> {
         };
     }
 
-    panic::set_hook(Box::new(|panic_info| {
-        error!(
-            "PANIC: Shutting down spotifyd. Error message: {}",
-            match (
-                panic_info.payload().downcast_ref::<String>(),
-                panic_info.payload().downcast_ref::<&str>(),
-            ) {
-                (Some(s), _) => &**s,
-                (_, Some(&s)) => s,
-                _ => "Unknown error type, can't produce message.",
-            }
-        );
-    }));
+    let runtime = Runtime::new().unwrap();
 
-    let mut core = Core::new().unwrap();
-    let handle = core.handle();
-
-    let initial_state = setup::initial_state(handle, internal_config);
-    core.run(initial_state).unwrap();
+    runtime.block_on(async {
+        let initial_state = setup::initial_state(internal_config);
+        initial_state.await;
+    });
 
     Ok(())
 }

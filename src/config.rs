@@ -14,7 +14,7 @@ use serde::{de::Error, de::Unexpected, Deserialize, Deserializer};
 use sha1::{Digest, Sha1};
 use std::{fmt, fs, path::PathBuf, str::FromStr, string::ToString};
 use structopt::{clap::AppSettings, StructOpt};
-use url::Url;
+use reqwest::Url;
 
 const CONFIG_FILE_NAME: &str = "spotifyd.conf";
 
@@ -682,12 +682,20 @@ pub(crate) fn get_internal_config(config: CliConfig) -> SpotifydConfig {
         },
         None => info!("No proxy specified"),
     }
+
+    // This only exposes some things from the playerconfig, unclear if we want to expose everything.
+    let mut pc = PlayerConfig::default();
+    pc.bitrate = bitrate;
+    pc.normalisation = config.shared_config.volume_normalisation;
+    pc.normalisation_pregain = normalisation_pregain;
+    pc.gapless = true;
+
     SpotifydConfig {
         username,
         password,
         use_keyring: config.shared_config.use_keyring,
         use_mpris: config.shared_config.use_mpris.unwrap_or(true),
-        cache,
+        cache: Some(cache),
         backend: Some(backend),
         audio_device: config.shared_config.device,
         control_device: config.shared_config.control,
@@ -695,14 +703,9 @@ pub(crate) fn get_internal_config(config: CliConfig) -> SpotifydConfig {
         volume_controller,
         initial_volume,
         device_name,
-        player_config: PlayerConfig {
-            bitrate,
-            normalisation: config.shared_config.volume_normalisation,
-            normalisation_pregain,
-            gapless: true,
-        },
+        player_config: pc,
         session_config: SessionConfig {
-            user_agent: version::version_string(),
+            user_agent: version::VERSION_STRING.to_owned(),
             device_id,
             proxy: proxy_url,
             ap_port: Some(443),

@@ -24,11 +24,10 @@ use rspotify::spotify::{
     util::datetime_to_timestamp,
 };
 use std::{collections::HashMap, env, rc::Rc, thread};
-use tokio_core::reactor::Handle;
+use futures::task::{Context, Poll};
 
 pub struct DbusServer {
     session: Session,
-    handle: Handle,
     spirc: Rc<Spirc>,
     api_token: RspotifyToken,
     token_request: Option<Box<dyn Future<Item = LibrespotToken, Error = MercuryError>>>,
@@ -47,13 +46,11 @@ const SCOPE: &str = "user-read-playback-state,user-read-private,\
 impl DbusServer {
     pub fn new(
         session: Session,
-        handle: Handle,
         spirc: Rc<Spirc>,
         device_name: String,
     ) -> DbusServer {
         DbusServer {
             session,
-            handle,
             spirc,
             api_token: RspotifyToken::default(),
             token_request: None,
@@ -72,10 +69,9 @@ impl DbusServer {
 }
 
 impl Future for DbusServer {
-    type Error = ();
-    type Item = ();
+    type Output = ();
 
-    fn poll(&mut self) -> Poll<(), ()> {
+    fn poll(&mut self, ctx: &mut Context<'_>) -> Poll<()> {
         let mut got_new_token = false;
         if self.is_token_expired() {
             if let Some(ref mut fut) = self.token_request {
