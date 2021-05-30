@@ -19,6 +19,7 @@ use log::{info};
 use std::str::FromStr;
 use tokio::signal::ctrl_c;
 use librespot::playback::config::AudioFormat;
+use librespot::core::cache::Cache;
 
 pub(crate) fn initial_state(
     config: config::SpotifydConfig,
@@ -114,11 +115,9 @@ pub(crate) fn initial_state(
         }
     }
 
-    let credentials = Credentials::with_password(
-        // TODO: rework this
-        username.unwrap(),
-        password.unwrap(),
-    );
+    // TODO: restore old functionality to put an error in `connection`.
+    let credentials = get_credentials(&cache, &username, &password).unwrap();
+
     let connection = Session::connect(
         session_config.clone(),
         credentials,
@@ -152,6 +151,14 @@ pub(crate) fn initial_state(
         autoplay,
         use_mpris: config.use_mpris,
     }
+}
+
+fn get_credentials(cache: &Option<Cache>, username: &Option<String>, password: &Option<String>) -> Option<Credentials> {
+    if let (Some(username), Some(password)) = (username, password) {
+        return Some(Credentials::with_password(username, password));
+    }
+
+    cache.as_ref()?.credentials()
 }
 
 fn find_backend(name: Option<&str>) -> fn(Option<String>, AudioFormat) -> Box<dyn Sink> {
