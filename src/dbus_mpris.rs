@@ -69,47 +69,59 @@ pub async fn dbus_server_2(session: Session, spirc: Rc<Spirc>, device_name: Stri
             .emits_changed_const()
             .get(|_, _| Ok(vec![]));
     });
-    //
-    // let player_iface = cr.register("org.mpris.MediaPlayer2.Player", |b|{
-    //     b.property("PlaybackStatus");
-    //
-    //     // Optional:
-    //     // b.property("LoopStatus");
-    //     // b.property("Shuffle");
-    //     b.property("Metadata");
-    //     b.property("Volume");
-    //     b.property("Position");
-    //
-    //     b.property("MinimumRate")
-    //         .emits_changed_false()
-    //         .get(|_| Ok(1.0));
-    //     b.property("MaximumRate")
-    //         .emits_changed_false()
-    //         .get(|_| Ok(1.0));
-    //
-    //     // TODO: the answer to this should depend on current playback state.
-    //     b.property("CanGoNext")
-    //         .emits_changed_false()
-    //         .get(|_| Ok(true));
-    //     b.property("CanGoPrevious")
-    //         .emits_changed_false()
-    //         .get(|_| Ok(true));
-    //     b.property("CanPlay")
-    //         .emits_changed_false()
-    //         .get(|_| Ok(true));
-    //     b.property("CanPause")
-    //         .emits_changed_false()
-    //         .get(|_| Ok(true));
-    //
-    //     // For now, don't support this
-    //     b.property("CanSeek").emits_changed_const().get(|_| Ok(false));
-    //     b.property("CanControl")
-    //         .emits_changed_const()
-    //         .get(|_| Ok(true));
-    //
-    // });
 
-    cr.insert("/", &[mediaplayer2_iface], ());
+    let player_iface = cr.register("org.mpris.MediaPlayer2.Player", |b: &mut IfaceBuilder<PlayerData>|{
+        b.property("PlaybackStatus")
+            .emits_changed_false()
+            .get_with_cr(|ctx, cr| {
+                let data: &mut PlayerData = cr.data_mut(ctx.path()).unwrap();
+                Ok(data.playback_status.to_str().to_owned())
+            });
+
+        // Optional:
+        // b.property("LoopStatus");
+        // b.property("Shuffle");
+
+        // b.property("Metadata")
+        //     .emits_changed_false()
+        //     .get_with_cr(|ctx, cr| {
+        //         // TODO
+        //         Ok(false)
+        //     })
+        // ;
+        // b.property("Volume");
+        // b.property("Position");
+
+        b.property("MinimumRate")
+            .emits_changed_false()
+            .get(|_,_| Ok(1.0));
+        b.property("MaximumRate")
+            .emits_changed_false()
+            .get(|_,_| Ok(1.0));
+
+        // TODO: the answer to this should depend on current playback state.
+        b.property("CanGoNext")
+            .emits_changed_false()
+            .get(|_,_| Ok(true));
+        b.property("CanGoPrevious")
+            .emits_changed_false()
+            .get(|_,_| Ok(true));
+        b.property("CanPlay")
+            .emits_changed_false()
+            .get(|_,_| Ok(true));
+        b.property("CanPause")
+            .emits_changed_false()
+            .get(|_,_| Ok(true));
+
+        // For now, don't support this
+        b.property("CanSeek").emits_changed_const().get(|_,_| Ok(false));
+        b.property("CanControl")
+            .emits_changed_const()
+            .get(|_,_| Ok(true));
+
+    });
+
+    cr.insert("/", &[mediaplayer2_iface, player_iface], PlayerData {  playback_status: MprisPlaybackStatus::Paused });
 
     connection.start_receive(MatchRule::new_method_call(), Box::new(move |msg, conn| {
         cr.handle_message(msg, conn).unwrap();

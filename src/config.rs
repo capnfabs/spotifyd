@@ -575,14 +575,17 @@ pub(crate) struct SpotifydConfig {
 pub(crate) fn get_internal_config(config: CliConfig) -> SpotifydConfig {
     let audio_cache = !config.shared_config.no_audio_cache;
 
+    println!("lol {:?}", config.shared_config.cache_path);
+
     let cache = config
         .shared_config
         .cache_path
         .map(PathBuf::from)
         // TODO: plumb size limits, check audio_cache?
         .map(|path| Cache::new(Some(path.clone()),  if audio_cache {Some(path.clone())} else {None}, None))
-        // TODO: unwrap unwrap is mega gross.
-        .unwrap().unwrap();
+        // TODO: I broke this when I ported to new futures; we're unwrapping even when this is None
+        // we probably want to unwrap the result in the map.
+        .unwrap();
 
     let bitrate: LSBitrate = config
         .shared_config
@@ -695,7 +698,7 @@ pub(crate) fn get_internal_config(config: CliConfig) -> SpotifydConfig {
         password,
         use_keyring: config.shared_config.use_keyring,
         use_mpris: config.shared_config.use_mpris.unwrap_or(true),
-        cache: Some(cache),
+        cache: cache.ok(),
         backend: Some(backend),
         audio_device: config.shared_config.device,
         control_device: config.shared_config.control,
