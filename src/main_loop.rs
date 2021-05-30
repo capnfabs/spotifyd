@@ -72,11 +72,11 @@ fn new_dbus_server(
     spirc: Rc<Spirc>,
     device_name: String,
 ) -> Option<Pin<Box<dyn Future<Output=()>>>> {
-    Some(Pin::new(Box::new(DbusServer::new(
+    Some(Box::pin(DbusServer::new(
         session,
         spirc,
         device_name,
-    ))))
+    )))
 }
 
 #[cfg(not(feature = "dbus_mpris"))]

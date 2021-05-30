@@ -4,11 +4,8 @@ use dbus::{
     tree::{Access, MethodErr},
     BusType, Connection, MessageItem, MessageItemArray, NameFlag, Signature,
 };
-use dbus_tokio::{
-    tree::{AFactory, ATree, ATreeServer},
-    AConnection,
-};
-use futures::{sync::oneshot, Async, Future, Poll, Stream};
+use futures::{Future, Stream};
+use futures::channel::oneshot;
 use librespot::{
     connect::spirc::Spirc,
     core::{
@@ -25,13 +22,16 @@ use rspotify::spotify::{
 };
 use std::{collections::HashMap, env, rc::Rc, thread};
 use futures::task::{Context, Poll};
+use std::pin::Pin;
+use dbus_tokio::connection;
+use dbus_crossroads::Crossroads;
 
 pub struct DbusServer {
     session: Session,
     spirc: Rc<Spirc>,
     api_token: RspotifyToken,
-    token_request: Option<Box<dyn Future<Item = LibrespotToken, Error = MercuryError>>>,
-    dbus_future: Option<Box<dyn Future<Item = (), Error = ()>>>,
+    token_request: Option<Pin<Box<dyn Future<Output=Result<LibrespotToken, MercuryError>>>>>,
+    dbus_future: Option<Pin<Box<dyn Future<Output=()>>>>,
     device_name: String,
 }
 
@@ -68,20 +68,62 @@ impl DbusServer {
     }
 }
 
+pub async fn dbus_server_2(session: Session, spirc: Rc<Spirc>, device_name: String) -> Result<(), Box<dyn std::error::Error>> {
+    let (resource, connection) = connection::new_session_sync()?;
+    tokio::spawn(async {
+        let err = resource.await;
+        panic!("Lost connection to D-Bus: {}", err);
+    });
+        connection.request_name(
+            "org.mpris.MediaPlayer2.spotifyd",
+            false,
+            true,
+            true
+        ).await?;
+
+    // BUILD CROSSROADS
+    let mut cr = Crossroads::new();
+    cr.set_async_support(Some((c.clone(), Box::new(|x| { tokio::spawn(x); }))));
+    let iface_token = cr.register("org.mpris.MediaPlayer2", |b| {
+        b.method_with_cr_async("lol", ("input",), ("output",), |mut ctx, cr, (name,): (String,)| {
+            let hello: &mut Hello = cr.data_mut(ctx.path()).unwrap();
+            // And here's what happens when the method is called.
+            println!("Incoming hello call from {}!", name);
+            hello.called_count += 1;
+            let s = format!("Hello {}! This API has been used {} times.", name, hello.called_count);
+            let signal_msg = ctx.make_signal("HelloHappened", (name,));
+            ctx.push_msg(signal_msg);
+            // And the return value is a tuple of the output arguments.
+            ctx.reply(Ok((s,)))
+        });
+    });
+
+    // Let's add the "/hello" path, which implements the com.example.dbustest interface,
+    // to the crossroads instance.
+    cr.insert("/hello", &[iface_token], Hello { called_count: 0});
+
+    connection.start_receive(MatchRule::new_method_call(), Box::new(move |msg, conn| {
+        cr.handle_message(msg, conn).unwrap();
+        true
+    }));
+    // Run forever
+    future::pending::<()>().await;
+    unreachable!()
+}
+
 impl Future for DbusServer {
     type Output = ();
 
-    fn poll(&mut self, ctx: &mut Context<'_>) -> Poll<()> {
+    fn poll(mut self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<()> {
         let mut got_new_token = false;
         if self.is_token_expired() {
             if let Some(ref mut fut) = self.token_request {
-                if let Async::Ready(token) = fut.poll().unwrap() {
+                if let Poll::Ready(Ok(token)) = fut.as_mut().poll(ctx) {
                     self.api_token = RspotifyToken::default()
                         .access_token(&token.access_token)
                         .expires_in(token.expires_in)
                         .expires_at(datetime_to_timestamp(token.expires_in));
                     self.dbus_future = Some(create_dbus_server(
-                        self.handle.clone(),
                         self.api_token.clone(),
                         self.spirc.clone(),
                         self.device_name.clone(),
@@ -92,17 +134,17 @@ impl Future for DbusServer {
                 // This is more meant as a fast hotfix than anything else!
                 let client_id =
                     env::var("SPOTIFYD_CLIENT_ID").unwrap_or_else(|_| CLIENT_ID.to_string());
-                self.token_request = Some(get_token(&self.session, &client_id, SCOPE));
+                self.token_request = Some(Box::pin(get_token(&self.session, &client_id, SCOPE)));
             }
         } else if let Some(ref mut fut) = self.dbus_future {
-            return fut.poll();
+            return fut.as_mut().poll(ctx);
         }
 
         if got_new_token {
             self.token_request = None;
         }
 
-        Ok(Async::NotReady)
+        Poll::Pending
     }
 }
 
@@ -111,11 +153,10 @@ fn create_spotify_api(token: &RspotifyToken) -> Spotify {
 }
 
 fn create_dbus_server(
-    handle: Handle,
     api_token: RspotifyToken,
     spirc: Rc<Spirc>,
     device_name: String,
-) -> Box<dyn Future<Item = (), Error = ()>> {
+) -> Pin<Box<dyn Future<Output = ()>>> {
     macro_rules! spotify_api_method {
         ([ $sp:ident, $device:ident $(, $m:ident: $t:ty)*] $f:expr) => {
             {
@@ -631,7 +672,7 @@ fn create_dbus_server(
             .expect("Failed to unwrap async messages"),
     );
 
-    Box::new(server.for_each(|message| {
+    Box::pin(server.for_each(|message| {
         warn!("Unhandled DBus message: {:?}", message);
         Ok(())
     }))
