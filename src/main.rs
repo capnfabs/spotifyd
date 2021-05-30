@@ -90,6 +90,19 @@ fn main() -> Result<(), Report> {
         };
     }
 
+    panic::set_hook(Box::new(|panic_info| {
+        error!(
+            "PANIC: Shutting down spotifyd. Error message: {}",
+            match (
+                panic_info.payload().downcast_ref::<String>(),
+                panic_info.payload().downcast_ref::<&str>(),
+            ) {
+                (Some(s), _) => &**s,
+                (_, Some(&s)) => s,
+                _ => "Unknown error type, can't produce message.",
+            }
+        );
+    }));
     let runtime = Runtime::new().unwrap();
 
     runtime.block_on(async {
