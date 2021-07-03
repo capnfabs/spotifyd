@@ -4,7 +4,6 @@ use crate::config::CliConfig;
 use color_eyre::{eyre::Context, Help, Report, SectionExt};
 use daemonize::Daemonize;
 use log::{error, info, trace, LevelFilter};
-use std::panic;
 use structopt::StructOpt;
 use tokio::runtime::Runtime;
 
@@ -89,20 +88,6 @@ fn main() -> Result<(), Report> {
             Err(e) => error!("Something went wrong while daemonizing: {}", e),
         };
     }
-
-    panic::set_hook(Box::new(|panic_info| {
-        error!(
-            "PANIC: Shutting down spotifyd. Error message: {}",
-            match (
-                panic_info.payload().downcast_ref::<String>(),
-                panic_info.payload().downcast_ref::<&str>(),
-            ) {
-                (Some(s), _) => &**s,
-                (_, Some(&s)) => s,
-                _ => "Unknown error type, can't produce message.",
-            }
-        );
-    }));
     let runtime = Runtime::new().unwrap();
 
     runtime.block_on(async {

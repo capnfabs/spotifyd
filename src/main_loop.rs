@@ -1,6 +1,5 @@
 #[cfg(feature = "dbus_mpris")]
 use crate::dbus_mpris::dbus_server_2;
-use crate::process::{spawn_program_on_event, Child};
 use futures::{self, Future, Stream, StreamExt};
 use librespot::{
     connect::{
@@ -60,7 +59,6 @@ pub struct SpotifydState {
     pub shutting_down: bool,
     pub cache: Option<Cache>,
     pub device_name: String,
-    pub player_event_channel: Option<Pin<Box<dyn Stream<Item=PlayerEvent>>>>,
     pub player_event_program: Option<String>,
     pub dbus_mpris_server: Option<Pin<Box<dyn Future<Output=Result<(), Box<dyn std::error::Error>>>>>>,
 }
@@ -71,11 +69,13 @@ fn new_dbus_server(
     session: Session,
     spirc: Rc<Spirc>,
     device_name: String,
+    player_event_channel: Pin<Box<dyn Stream<Item=PlayerEvent>>>,
 ) -> Option<Pin<Box<dyn Future<Output=Result<(), Box<dyn std::error::Error>>>>>> {
     Some(Box::pin(dbus_server_2(
         session,
         spirc,
         device_name,
+        player_event_channel,
     )))
 }
 
@@ -84,6 +84,7 @@ fn new_dbus_server(
     _: Session,
     _: Rc<Spirc>,
     _: String,
+    _player_event_channel: Pin<Box<dyn Stream<Item=PlayerEvent>>>,
 ) -> Option<Pin<Box<dyn Future<Output = ()>>>> {
     None
 }
@@ -97,7 +98,6 @@ pub(crate) struct MainLoopState {
     pub(crate) autoplay: bool,
     pub(crate) volume_ctrl: VolumeCtrl,
     pub(crate) initial_volume: Option<u16>,
-    pub(crate) running_event_program: Option<Child>,
     pub(crate) shell: String,
     pub(crate) device_type: DeviceType,
     pub(crate) use_mpris: bool,
@@ -121,30 +121,6 @@ impl Future for MainLoopState {
                     Box::pin(Session::connect(session_config, creds, cache));
             }
 
-            if let Some(mut child) = self.running_event_program.take() {
-                match child.try_wait() {
-                    // Still running...
-                    Ok(None) => self.running_event_program = Some(child),
-                    // Exited with error...
-                    Err(e) => error!("{}", e),
-                    // Exited without error...
-                    Ok(Some(_)) => (),
-                }
-            }
-            if self.running_event_program.is_none() {
-                if let Some(ref mut player_event_channel) = self.spotifyd_state.player_event_channel
-                {
-                    if let Poll::Ready(Some(event)) = player_event_channel.as_mut().poll_next(cx) {
-                        if let Some(ref cmd) = self.spotifyd_state.player_event_program {
-                            match spawn_program_on_event(&self.shell, cmd, event) {
-                                Ok(child) => self.running_event_program = Some(child),
-                                Err(e) => error!("{}", e),
-                            }
-                        }
-                    }
-                }
-            }
-
             if let Some(ref mut fut) = self.spotifyd_state.dbus_mpris_server {
                 let _ = Future::poll(fut.as_mut(), cx);
             }
@@ -163,7 +139,10 @@ impl Future for MainLoopState {
                     move || (backend)(audio_device, AudioFormat::default()),
                 );
 
-                self.spotifyd_state.player_event_channel = Some(Box::pin(UnboundedReceiverStream::new(event_channel)));
+                // TODO: real version of this: have the dbus_mpris service return a tx, which we'll
+                //   then broadcast info on when the events come in (in addition to maybe running
+                //   the program).
+                let player_event_channel = Box::pin(UnboundedReceiverStream::new(event_channel));
 
                 let (spirc, spirc_task) = Spirc::new(
                     ConnectConfig {
@@ -186,6 +165,7 @@ impl Future for MainLoopState {
                         session,
                         shared_spirc,
                         self.spotifyd_state.device_name.clone(),
+                        player_event_channel,
                     );
                 }
             } else if let Poll::Ready(_) = Future::poll(self.spotifyd_state.ctrl_c_stream.as_mut(), cx) {
