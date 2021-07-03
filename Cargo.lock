@@ -1590,8 +1590,6 @@ dependencies = [
 [[package]]
 name = "librespot"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "450aa724dcc28a06c6f3a070e7f4b84c0800d9152bec3b012a11ff886986bd58"
 dependencies = [
  "base64 0.13.0",
  "env_logger 0.8.3",
@@ -1616,8 +1614,6 @@ dependencies = [
 [[package]]
 name = "librespot-audio"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fa0e89d3e106d80600537eba02c17ea6dd8b3de3f46c99952b813b6f6d6445c0"
 dependencies = [
  "aes-ctr",
  "byteorder",
@@ -1637,8 +1633,6 @@ dependencies = [
 [[package]]
 name = "librespot-connect"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69425fd6c8d74779f1ec86b16e6b3114df50c8a0d94db5a5601ef634bfb5e288"
 dependencies = [
  "aes-ctr",
  "base64 0.13.0",
@@ -1665,8 +1659,6 @@ dependencies = [
 [[package]]
 name = "librespot-core"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "df3e70dce131f5531c982ca133f04fd1d1dd4208de27291dcd9ab6841c963248"
 dependencies = [
  "aes",
  "base64 0.13.0",
@@ -1706,8 +1698,6 @@ dependencies = [
 [[package]]
 name = "librespot-metadata"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "84157ce5d901dbdcaef17ed305deba5d87171725347673a1b632a334d910af47"
 dependencies = [
  "async-trait",
  "byteorder",
@@ -1720,8 +1710,6 @@ dependencies = [
 [[package]]
 name = "librespot-playback"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "59ca3df986a7e1a43008717660803e159177e86a589d484a0fc01fccd7967ad6"
 dependencies = [
  "alsa",
  "byteorder",
@@ -1745,8 +1733,6 @@ dependencies = [
 [[package]]
 name = "librespot-protocol"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c753be4c3bd0f02b30c00d5d8547f16d557654cb737e70505aec6aa9990435d"
 dependencies = [
  "glob",
  "protobuf",

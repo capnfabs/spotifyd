@@ -8,6 +8,7 @@ use dbus_crossroads::{Crossroads, IfaceBuilder};
 use dbus_tokio::connection;
 use futures::{Stream, StreamExt};
 use futures;
+use log::warn;
 use librespot::{
     connect::spirc::Spirc,
     core::{
@@ -15,6 +16,10 @@ use librespot::{
     },
 };
 use librespot::playback::player::PlayerEvent;
+use librespot::metadata::{Track, Metadata};
+use std::collections::HashMap;
+use dbus::arg::{Variant, RefArg};
+use dbus::MethodErr;
 
 pub async fn dbus_server_2(session: Session, spirc: Rc<Spirc>, device_name: String, mut player_event_channel: Pin<Box<dyn Stream<Item=PlayerEvent>>>) -> Result<(), Box<dyn std::error::Error>> {
     let (resource, connection) = connection::new_session_sync()?;
@@ -72,13 +77,13 @@ pub async fn dbus_server_2(session: Session, spirc: Rc<Spirc>, device_name: Stri
         // b.property("LoopStatus");
         // b.property("Shuffle");
 
-        // b.property("Metadata")
-        //     .emits_changed_false()
-        //     .get_with_cr(|ctx, cr| {
-        //         // TODO
-        //         Ok(false)
-        //     })
-        // ;
+        b.property("Metadata")
+            .emits_changed_false()
+            .get_with_cr(|ctx, cr| {
+                let data: &mut PlayerData = cr.data_mut(ctx.path()).unwrap();
+                data.current_track.as_ref().map(|x| x.to_xesam()).ok_or(MethodErr::failed("womp"))
+            });
+
         // b.property("Volume");
         // b.property("Position");
 
@@ -111,7 +116,7 @@ pub async fn dbus_server_2(session: Session, spirc: Rc<Spirc>, device_name: Stri
 
     });
 
-    cr.insert("/", &[mediaplayer2_iface, player_iface], PlayerData {  playback_status: MprisPlaybackStatus::Paused });
+    cr.insert("/", &[mediaplayer2_iface, player_iface], PlayerData {  playback_status: MprisPlaybackStatus::Paused, current_track: None });
 
     // The Arc<Mutex<_>> thing here is a pattern for sharing state across thread contexts etc so that we can update the data
     // stored in Crossroads' system. Examples:
@@ -142,6 +147,13 @@ pub async fn dbus_server_2(session: Session, spirc: Rc<Spirc>, device_name: Stri
             PlayerEvent::Loading { .. } => {}
             PlayerEvent::Preloading { .. } => {}
             PlayerEvent::Playing { track_id, .. } => {
+                playerdata.current_track = Track::get(&session, track_id).await.map_or_else(
+                    |err| {
+                        warn!("Couldn't load metadata for track: {:?}", err);
+                        None
+                    },
+                    |metadata| Some(TrackMetadata::from_librespot(metadata)),
+                );
                 playerdata.playback_status = MprisPlaybackStatus::Playing;
             }
             PlayerEvent::Paused { .. } => {
@@ -175,6 +187,34 @@ impl MprisPlaybackStatus {
     }
 }
 
+struct TrackMetadata {
+    album: String,
+    album_artist: Vec<String>,
+    artist: Vec<String>,
+    title: String,
+}
+
+impl TrackMetadata {
+    fn from_librespot(t: Track) -> TrackMetadata {
+        TrackMetadata {
+            album: t.album.name,
+            album_artist: (&t.album.artists).iter().map(|artist| artist.name.clone()).collect(),
+            artist: t.artists.iter().map(|artist| artist.name.clone()).collect(),
+            title: t.name,
+        }
+    }
+
+    fn to_xesam(&self) -> HashMap<String, Variant<Box<dyn RefArg>>> {
+        let mut xesam: HashMap<String, Variant<Box<dyn RefArg>>> = HashMap::new();
+        xesam.insert("xesam:artist".to_owned(), Variant(Box::new(self.artist.clone())));
+        xesam.insert("xesam:albumArtist".to_owned(), Variant(Box::new(self.album_artist.clone())));
+        xesam.insert("xesam:title".to_owned(), Variant(Box::new(self.title.clone())));
+        xesam.insert("xesam:album".to_owned(), Variant(Box::new(self.album.clone())));
+        xesam
+    }
+}
+
 struct PlayerData {
     playback_status: MprisPlaybackStatus,
+    current_track: Option<TrackMetadata>,
 }
