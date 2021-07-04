@@ -25,6 +25,7 @@ use std::pin::Pin;
 use librespot::playback::config::AudioFormat;
 use librespot::core::session::SessionError;
 use tokio_stream::wrappers::UnboundedReceiverStream;
+use librespot::connect::spirc::{ContextChangedEventChannel, ContextChangedEvent};
 
 pub struct LibreSpotConnection {
     connection: Pin<Box<dyn Future<Output=Result<Session, SessionError>>>>,
@@ -70,12 +71,14 @@ fn new_dbus_server(
     spirc: Rc<Spirc>,
     device_name: String,
     player_event_channel: Pin<Box<dyn Stream<Item=PlayerEvent>>>,
+    context_event_channel: Pin<Box<dyn Stream<Item=ContextChangedEvent>>>
 ) -> Option<Pin<Box<dyn Future<Output=Result<(), Box<dyn std::error::Error>>>>>> {
     Some(Box::pin(dbus_server_2(
         session,
         spirc,
         device_name,
         player_event_channel,
+        context_event_channel,
     )))
 }
 
@@ -144,7 +147,7 @@ impl Future for MainLoopState {
                 //   the program).
                 let player_event_channel = Box::pin(UnboundedReceiverStream::new(event_channel));
 
-                let (spirc, spirc_task) = Spirc::new(
+                let (spirc, spirc_task, context_channel) = Spirc::new(
                     ConnectConfig {
                         autoplay: self.autoplay,
                         name: self.spotifyd_state.device_name.clone(),
@@ -156,6 +159,9 @@ impl Future for MainLoopState {
                     player,
                     mixer,
                 );
+
+                let context_event_channel = Box::pin(UnboundedReceiverStream::new(context_channel));
+
                 self.librespot_connection.spirc_task = Some(Box::pin(spirc_task));
                 let shared_spirc = Rc::new(spirc);
                 self.librespot_connection.spirc = Some(shared_spirc.clone());
@@ -166,6 +172,7 @@ impl Future for MainLoopState {
                         shared_spirc,
                         self.spotifyd_state.device_name.clone(),
                         player_event_channel,
+                        context_event_channel,
                     );
                 }
             } else if let Poll::Ready(_) = Future::poll(self.spotifyd_state.ctrl_c_stream.as_mut(), cx) {

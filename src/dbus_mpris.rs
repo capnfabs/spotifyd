@@ -8,7 +8,7 @@ use dbus_crossroads::{Crossroads, IfaceBuilder};
 use dbus_tokio::connection;
 use futures::{Stream, StreamExt};
 use futures;
-use log::warn;
+use log::{warn, info};
 use librespot::{
     connect::spirc::Spirc,
     core::{
@@ -20,8 +20,14 @@ use librespot::metadata::{Track, Metadata};
 use std::collections::HashMap;
 use dbus::arg::{Variant, RefArg};
 use dbus::MethodErr;
+use librespot::connect::spirc::ContextChangedEvent;
 
-pub async fn dbus_server_2(session: Session, spirc: Rc<Spirc>, device_name: String, mut player_event_channel: Pin<Box<dyn Stream<Item=PlayerEvent>>>) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn dbus_server_2(
+    session: Session,
+    spirc: Rc<Spirc>,
+    device_name: String,
+    mut player_event_channel: Pin<Box<dyn Stream<Item=PlayerEvent>>>,
+    mut context_event_channel: Pin<Box<dyn Stream<Item=ContextChangedEvent>>>) -> Result<(), Box<dyn std::error::Error>> {
     let (resource, connection) = connection::new_session_sync()?;
     tokio::spawn(async {
         let err = resource.await;
@@ -81,7 +87,15 @@ pub async fn dbus_server_2(session: Session, spirc: Rc<Spirc>, device_name: Stri
             .emits_changed_false()
             .get_with_cr(|ctx, cr| {
                 let data: &mut PlayerData = cr.data_mut(ctx.path()).unwrap();
-                data.current_track.as_ref().map(|x| x.to_xesam()).ok_or(MethodErr::failed("womp"))
+                let context_uri = &data.context_state;
+                data.current_track.as_ref().map(|x| {
+                        let mut data = x.to_xesam();
+                        if let Some(state) = context_uri {
+                            data.insert("spotifyd:contextUri".to_string(), Variant(Box::new(state.context_uri.clone())));
+                            data.insert("spotifyd:playlistTrackNumber".to_string(), Variant(Box::new(state.playing_track_index + 1)));
+                        }
+                        data
+                    }).ok_or(MethodErr::failed("womp"))
             });
 
         // b.property("Volume");
@@ -116,7 +130,7 @@ pub async fn dbus_server_2(session: Session, spirc: Rc<Spirc>, device_name: Stri
 
     });
 
-    cr.insert("/", &[mediaplayer2_iface, player_iface], PlayerData {  playback_status: MprisPlaybackStatus::Paused, current_track: None });
+    cr.insert("/", &[mediaplayer2_iface, player_iface], PlayerData { playback_status: MprisPlaybackStatus::Paused, current_track: None, context_state: None });
 
     // The Arc<Mutex<_>> thing here is a pattern for sharing state across thread contexts etc so that we can update the data
     // stored in Crossroads' system. Examples:
@@ -135,40 +149,53 @@ pub async fn dbus_server_2(session: Session, spirc: Rc<Spirc>, device_name: Stri
     // - Use the command line runner from the librespot example for clues as to how this state
     //     machine should work.
 
-    while let Some(event) = player_event_channel.as_mut().next().await {
-        let mut cr = cr_arc.lock().unwrap();
-        let playerdata: &mut PlayerData = cr.data_mut(&"/".into()).unwrap();
-        match event {
-            PlayerEvent::Stopped { .. } => {
-                playerdata.playback_status = MprisPlaybackStatus::Stopped;
-            }
-            PlayerEvent::Started { .. } => {}
-            PlayerEvent::Changed { .. } => {}
-            PlayerEvent::Loading { .. } => {}
-            PlayerEvent::Preloading { .. } => {}
-            PlayerEvent::Playing { track_id, .. } => {
-                playerdata.current_track = Track::get(&session, track_id).await.map_or_else(
-                    |err| {
-                        warn!("Couldn't load metadata for track: {:?}", err);
-                        None
-                    },
-                    |metadata| Some(TrackMetadata::from_librespot(metadata)),
-                );
-                playerdata.playback_status = MprisPlaybackStatus::Playing;
-            }
-            PlayerEvent::Paused { .. } => {
-                playerdata.playback_status = MprisPlaybackStatus::Paused;
-            }
-            PlayerEvent::TimeToPreloadNextTrack { .. } => {}
-            PlayerEvent::EndOfTrack { .. } => {}
-            PlayerEvent::Unavailable { .. } => {}
-            PlayerEvent::VolumeSet { .. } => {}
+    loop {
+        let mut pe = player_event_channel.as_mut();
+        let mut ce = context_event_channel.as_mut();
+        tokio::select! {
+            event = pe.next() => {
+                info!("Got player event: {:?}", event);
+                if let Some(event) = event {
+                    let mut cr = cr_arc.lock().unwrap();
+                    let playerdata: &mut PlayerData = cr.data_mut(&"/".into()).unwrap();
+                    match event {
+                        PlayerEvent::Stopped { .. } => {
+                            playerdata.playback_status = MprisPlaybackStatus::Stopped;
+                        }
+                        PlayerEvent::Started { .. } => {}
+                        PlayerEvent::Changed { .. } => {}
+                        PlayerEvent::Loading { .. } => {}
+                        PlayerEvent::Preloading { .. } => {}
+                        PlayerEvent::Playing { track_id, .. } => {
+                            playerdata.current_track = Track::get(&session, track_id).await.map_or_else(
+                                |err| {
+                                    warn!("Couldn't load metadata for track: {:?}", err);
+                                    None
+                                },
+                                |metadata| Some(TrackMetadata::from_librespot(metadata)),
+                            );
+                            playerdata.playback_status = MprisPlaybackStatus::Playing;
+                        }
+                        PlayerEvent::Paused { .. } => {
+                            playerdata.playback_status = MprisPlaybackStatus::Paused;
+                        }
+                        PlayerEvent::TimeToPreloadNextTrack { .. } => {}
+                        PlayerEvent::EndOfTrack { .. } => {}
+                        PlayerEvent::Unavailable { .. } => {}
+                        PlayerEvent::VolumeSet { .. } => {}
+                    }
+                }
+            },
+            event = ce.next() => {
+                info!("Got context changed event: {:?}", event);
+                if let Some(event) = event {
+                    let mut cr = cr_arc.lock().unwrap();
+                    let playerdata: &mut PlayerData = cr.data_mut(&"/".into()).unwrap();
+                    playerdata.context_state = Some(event);
+                }
+            },
         }
     }
-
-    // Run forever
-    futures::future::pending::<()>().await;
-    unreachable!()
 }
 
 enum MprisPlaybackStatus {
@@ -188,28 +215,39 @@ impl MprisPlaybackStatus {
 }
 
 struct TrackMetadata {
-    album: String,
-    album_artist: Vec<String>,
-    artist: Vec<String>,
-    title: String,
+    track: Track,
 }
 
 impl TrackMetadata {
     fn from_librespot(t: Track) -> TrackMetadata {
         TrackMetadata {
-            album: t.album.name,
-            album_artist: (&t.album.artists).iter().map(|artist| artist.name.clone()).collect(),
-            artist: t.artists.iter().map(|artist| artist.name.clone()).collect(),
-            title: t.name,
+            track: t
         }
     }
 
     fn to_xesam(&self) -> HashMap<String, Variant<Box<dyn RefArg>>> {
+        let t = &self.track;
+        let uri = t.id.to_uri();
+        let album = t.album.name.clone();
+        let album_artist: Vec<_> = (&t.album.artists).iter().map(|artist| artist.name.clone()).collect();
+        let artist: Vec<_> = t.artists.iter().map(|artist| artist.name.clone()).collect();
+        let title = t.name.clone();
+
         let mut xesam: HashMap<String, Variant<Box<dyn RefArg>>> = HashMap::new();
-        xesam.insert("xesam:artist".to_owned(), Variant(Box::new(self.artist.clone())));
-        xesam.insert("xesam:albumArtist".to_owned(), Variant(Box::new(self.album_artist.clone())));
-        xesam.insert("xesam:title".to_owned(), Variant(Box::new(self.title.clone())));
-        xesam.insert("xesam:album".to_owned(), Variant(Box::new(self.album.clone())));
+        xesam.insert("mpris:trackid".to_string(), Variant(Box::new(uri.clone())));
+        // millis -> micros
+        xesam.insert("mpris:length".to_string(), Variant(Box::new(t.duration * 1000)));
+        // Complex to route
+        //xesam.insert("mpris:artUrl".to_string(), Variant(Box::new(None)));
+        xesam.insert("xesam:title".to_string(), Variant(Box::new(title)));
+        xesam.insert("xesam:album".to_string(), Variant(Box::new(album)));
+        xesam.insert("xesam:artist".to_string(), Variant(Box::new(artist)));
+        xesam.insert("xesam:albumArtist".to_string(), Variant(Box::new(album_artist)));
+        xesam.insert("xesam:autoRating".to_string(), Variant(Box::new(f64::from(t.popularity) / 100.0)));
+        xesam.insert("xesam:trackNumber".to_string(), Variant(Box::new(t.track_number)));
+        xesam.insert("xesam:discNumber".to_string(), Variant(Box::new(t.disc_number)));
+        xesam.insert("xesam:url".to_string(), Variant(Box::new(uri)));
+
         xesam
     }
 }
@@ -217,4 +255,5 @@ impl TrackMetadata {
 struct PlayerData {
     playback_status: MprisPlaybackStatus,
     current_track: Option<TrackMetadata>,
+    context_state: Option<ContextChangedEvent>,
 }
