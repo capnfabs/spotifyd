@@ -1,4 +1,3 @@
-use std::rc::Rc;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
@@ -6,7 +5,7 @@ use dbus::channel::MatchingReceiver;
 use dbus::message::MatchRule;
 use dbus_crossroads::{Crossroads, IfaceBuilder};
 use dbus_tokio::connection;
-use futures::{Stream, StreamExt};
+use futures::{Stream, StreamExt, TryFutureExt};
 use futures;
 use log::{warn, info};
 use librespot::{
@@ -21,10 +20,28 @@ use std::collections::HashMap;
 use dbus::arg::{Variant, RefArg};
 use dbus::MethodErr;
 use librespot::connect::spirc::ContextChangedEvent;
+use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+use rspotify::oauth2::SpotifyClientCredentials;
+use rspotify::oauth2::TokenInfo as RspotifyToken;
+use rspotify::client::Spotify;
+use tokio_compat_02::FutureExt;
+use std::env;
+use librespot::core::keymaster::get_token;
+use rspotify::util::datetime_to_timestamp;
+use rspotify::model::offset::for_position;
+
+const CLIENT_ID: &str = "2c1ea588dfbc4a989e2426f8385297c3";
+const SCOPE: &str = "user-read-playback-state,user-read-private,\
+                     user-read-email,playlist-read-private,user-library-read,user-library-modify,\
+                     user-top-read,playlist-read-collaborative,playlist-modify-public,\
+                     playlist-modify-private,user-follow-read,user-follow-modify,\
+                     user-read-currently-playing,user-modify-playback-state,\
+                     user-read-recently-played";
+
 
 pub async fn dbus_server_2(
     session: Session,
-    spirc: Rc<Spirc>,
+    spirc: Arc<Spirc>,
     device_name: String,
     mut player_event_channel: Pin<Box<dyn Stream<Item=PlayerEvent>>>,
     mut context_event_channel: Pin<Box<dyn Stream<Item=ContextChangedEvent>>>) -> Result<(), Box<dyn std::error::Error>> {
@@ -40,15 +57,24 @@ pub async fn dbus_server_2(
         true
     ).await?;
 
+    // Spotify token
+    // TODO: token reloading
+    let client_id = env::var("SPOTIFYD_CLIENT_ID").unwrap_or_else(|_| CLIENT_ID.to_string());
+    let token = get_token(&session, &client_id, SCOPE).await.unwrap();
+    let api_token = RspotifyToken::default()
+                        .access_token(&token.access_token)
+                        .expires_in(token.expires_in)
+                        .expires_at(datetime_to_timestamp(token.expires_in));
+
     // BUILD CROSSROADS
     let mut cr = Crossroads::new();
     cr.set_async_support(Some((connection.clone(), Box::new(|x| { tokio::spawn(x); }))));
     // https://specifications.freedesktop.org/mpris-spec/latest/Media_Player.html
     let mediaplayer2_iface = cr.register("org.mpris.MediaPlayer2", |b| {
         b.method("Raise", (), (), |_, _, ():()| Ok(()));
-        b.method_with_cr("Quit", (), (),  |_, _, ():()| {
-            //let local_spirc = spirc.clone();
-            //local_spirc.shutdown();
+        let local_spirc = spirc.clone();
+        b.method_with_cr("Quit", (), (),  move |_, _, ():()| {
+            local_spirc.shutdown();
             Ok(())
         });
         b.property("CanRaise")
@@ -108,7 +134,9 @@ pub async fn dbus_server_2(
             .emits_changed_false()
             .get(|_,_| Ok(1.0));
 
-        // TODO: the answer to this should depend on current playback state.
+        // TODO: the answer to this should depend on current playback state, but it's minor because
+        // according to the spec, "If it is unknown whether a call to Next will be successful
+        // (for example, when streaming tracks), this property should be set to true."
         b.property("CanGoNext")
             .emits_changed_false()
             .get(|_,_| Ok(true));
@@ -117,10 +145,10 @@ pub async fn dbus_server_2(
             .get(|_,_| Ok(true));
         b.property("CanPlay")
             .emits_changed_false()
-            .get(|_,_| Ok(true));
+            .get(|_,data| { Ok(data.current_track.is_some()) });
         b.property("CanPause")
             .emits_changed_false()
-            .get(|_,_| Ok(true));
+            .get(|_,data| { Ok(data.current_track.is_some()) });
 
         // For now, don't support this
         b.property("CanSeek").emits_changed_const().get(|_,_| Ok(false));
@@ -128,6 +156,68 @@ pub async fn dbus_server_2(
             .emits_changed_const()
             .get(|_,_| Ok(true));
 
+        let spirc_clone = spirc.clone();
+        b.method("Next", (),(), move |_ctx, data, _: ()| {
+            spirc_clone.next();
+            Ok(())
+        });
+        let spirc_clone = spirc.clone();
+        b.method("Previous", (),(), move |_ctx, data, _: ()| {
+            spirc_clone.prev();
+            Ok(())
+        });
+        let spirc_clone = spirc.clone();
+        b.method("Pause", (),(), move |_ctx, data, _: ()| {
+            spirc_clone.pause();
+            Ok(())
+        });
+        let spirc_clone = spirc.clone();
+        b.method("PlayPause", (),(), move |_ctx, data, _: ()| {
+            spirc_clone.play_pause();
+            Ok(())
+        });
+        let spirc_clone = spirc.clone();
+        b.method("Stop", (),(), move |_ctx, data, _: ()| {
+            spirc_clone.stop();
+            Ok(())
+        });
+        let spirc_clone = spirc.clone();
+        b.method("Play", (),(), move |_ctx, data, _: ()| {
+            spirc_clone.play();
+            Ok(())
+        });
+        let spirc_clone = spirc.clone();
+        let device_name = utf8_percent_encode(&device_name, NON_ALPHANUMERIC).to_string();
+        b.method_with_cr_async("OpenUri", ("uri",),(), move |mut ctx, cr, (uri,): (String,)| {
+            // I have no idea why I had to fight the borrow checker so hard here
+            let device_name = device_name.clone();
+            let token = token.clone();
+            async move {
+                let spot = Spotify::default().access_token(&token.access_token).build();
+                let device_id = match spot.device().compat().await {
+                    Ok(device_payload) => {
+                        match device_payload.devices.into_iter().find(|d| d.is_active && d.name == device_name) {
+                            Some(device) => Some(device.id),
+                            None => None,
+                        }
+                    },
+                    Err(_) => None,
+                };
+                match device_id {
+                    Some(device_id) => {
+                        if uri.contains("spotify:track") {
+                            spot.start_playback(Some(device_id), None, Some(vec![uri]), for_position(0), None)
+                        } else {
+                            spot.start_playback(Some(device_id), Some(uri), None, for_position(0), None)
+                        }.compat().await.unwrap();
+                        ctx.reply(Ok(()))
+                    }
+                    None => {
+                        ctx.reply(Err(MethodErr::failed("oh noooooo")))
+                    }
+                }
+            }
+        });
     });
 
     cr.insert("/", &[mediaplayer2_iface, player_iface], PlayerData { playback_status: MprisPlaybackStatus::Paused, current_track: None, context_state: None });
