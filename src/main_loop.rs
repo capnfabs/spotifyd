@@ -1,5 +1,5 @@
 #[cfg(feature = "dbus_mpris")]
-use crate::dbus_mpris::DbusServer;
+use crate::dbus_mpris::dbus_server;
 use crate::process::{spawn_program_on_event, Child};
 use futures::{self, Future, Stream, StreamExt};
 use librespot::core::session::SessionError;
@@ -70,7 +70,7 @@ fn new_dbus_server(
     spirc: Arc<Spirc>,
     device_name: String,
 ) -> Option<Pin<Box<dyn Future<Output = ()>>>> {
-    Some(Box::pin(DbusServer::new(session, spirc, device_name)))
+    Some(Box::pin(dbus_server(session.clone(), spirc, device_name)))
 }
 
 #[cfg(not(feature = "dbus_mpris"))]
