@@ -67,40 +67,7 @@ impl Future for DbusServer {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
         if self.is_token_expiring() {
-            info!("Token expiring soon / expired!");
-            match self.token_request {
-                Some(ref mut fut) => {
-                    info!("Token request inflight");
-                    if let Poll::Ready(Ok(token)) = fut.as_mut().poll(cx) {
-                        {
-                            let mut api_tok_mut = self.api_token.lock().unwrap();
-                            *api_tok_mut = RspotifyToken::default()
-                                .access_token(&token.access_token)
-                                .expires_in(token.expires_in)
-                                .expires_at(datetime_to_timestamp(token.expires_in));
-                        }
-                        info!("Got new access token, expires in {:?} seconds", token.expires_in);
-                        if self.dbus_future.is_none() {
-                            self.dbus_future = Some(Box::pin(create_dbus_server(
-                                self.api_token.clone(),
-                                self.spirc.clone(),
-                                self.device_name.clone(),
-                            )));
-                        }
-                        self.token_request = None;
-                    }
-                }
-                None => {
-                    info!("Requesting new token");
-                    self.token_request = Some(Box::pin({
-                        let sess = self.session.clone();
-                        // This is more meant as a fast hotfix than anything else!
-                        let client_id =
-                            env::var("SPOTIFYD_CLIENT_ID").unwrap_or_else(|_| CLIENT_ID.to_string());
-                        async move { get_token(&sess, &client_id, SCOPE).await }
-                    }));
-                }
-            }
+            self.refresh_token(cx)
         } else if let Some(ref mut fut) = self.dbus_future {
             return fut.as_mut().poll(cx);
         }
@@ -108,6 +75,7 @@ impl Future for DbusServer {
         Poll::Pending
     }
 }
+
 
 fn create_spotify_api(token: &Arc<Mutex<RspotifyToken>>) -> Spotify {
     Spotify::default().access_token(&token.lock().unwrap().access_token).build()
@@ -461,4 +429,43 @@ async fn create_dbus_server(api_token: Arc<Mutex<RspotifyToken>>, spirc: Arc<Spi
     // run forever
     futures::future::pending::<()>().await;
     unreachable!();
+}
+
+impl DbusServer {
+    fn refresh_token(mut self: Pin<&mut Self>, cx: &mut Context) {
+        info!("Token expiring soon / expired!");
+        match self.token_request {
+            Some(ref mut fut) => {
+                info!("Token request inflight");
+                if let Poll::Ready(Ok(token)) = fut.as_mut().poll(cx) {
+                    {
+                        let mut api_tok_mut = self.api_token.lock().unwrap();
+                        *api_tok_mut = RspotifyToken::default()
+                            .access_token(&token.access_token)
+                            .expires_in(token.expires_in)
+                            .expires_at(datetime_to_timestamp(token.expires_in));
+                    }
+                    info!("Got new access token, expires in {:?} seconds", token.expires_in);
+                    if self.dbus_future.is_none() {
+                        self.dbus_future = Some(Box::pin(create_dbus_server(
+                            self.api_token.clone(),
+                            self.spirc.clone(),
+                            self.device_name.clone(),
+                        )));
+                    }
+                    self.token_request = None;
+                }
+            }
+            None => {
+                info!("Requesting new token");
+                self.token_request = Some(Box::pin({
+                    let sess = self.session.clone();
+                    // This is more meant as a fast hotfix than anything else!
+                    let client_id =
+                        env::var("SPOTIFYD_CLIENT_ID").unwrap_or_else(|_| CLIENT_ID.to_string());
+                    async move { get_token(&sess, &client_id, SCOPE).await }
+                }));
+            }
+        }
+    }
 }
