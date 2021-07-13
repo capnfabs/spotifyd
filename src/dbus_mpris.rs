@@ -3,7 +3,7 @@ use dbus::channel::MatchingReceiver;
 use dbus::message::MatchRule;
 use dbus_crossroads::{Crossroads, IfaceToken};
 use dbus_tokio::connection;
-use futures::{self};
+use futures::{self, Stream, StreamExt};
 use librespot::{
     connect::spirc::Spirc,
     core::{keymaster::get_token, session::Session},
@@ -19,6 +19,8 @@ use std::time::Duration;
 use std::{collections::HashMap, env};
 use tokio::select;
 use tokio::time::Instant;
+use librespot::playback::player::PlayerEvent;
+use std::pin::Pin;
 
 const CLIENT_ID: &str = "2c1ea588dfbc4a989e2426f8385297c3";
 const SCOPE: &str = "user-read-playback-state,user-read-private,\
@@ -30,7 +32,7 @@ const SCOPE: &str = "user-read-playback-state,user-read-private,\
 
 const TOKEN_EXPIRY_SAFETY_SEC: u64 = 100;
 
-pub async fn dbus_server(session: Session, spirc: Arc<Spirc>, device_name: String) {
+pub async fn dbus_server(session: Session, player_event_channel: Pin<Box<dyn Stream<Item = PlayerEvent>>>, spirc: Arc<Spirc>, device_name: String) {
     let session = &session;
     let token = refresh_token(session)
         .await
@@ -40,7 +42,7 @@ pub async fn dbus_server(session: Session, spirc: Arc<Spirc>, device_name: Strin
     ));
     tokio::pin!(token_expiry);
     let locked_token = Arc::new(Mutex::new(token));
-    let dbus_future = create_dbus_server(locked_token.clone(), spirc, device_name);
+    let dbus_future = create_dbus_server(locked_token.clone(), player_event_channel, spirc, device_name);
     tokio::pin!(dbus_future);
     loop {
         select! {
@@ -68,6 +70,7 @@ fn create_spotify_api(token: &Arc<Mutex<RspotifyToken>>) -> Spotify {
 
 async fn create_dbus_server(
     api_token: Arc<Mutex<RspotifyToken>>,
+    mut player_event_channel: Pin<Box<dyn Stream<Item=PlayerEvent>>>,
     spirc: Arc<Spirc>,
     device_name: String,
 ) {
@@ -414,6 +417,11 @@ async fn create_dbus_server(
             true
         }),
     );
+
+    while let Some(event) = player_event_channel.next().await {
+        println!("Event: {:?}", event);
+    }
+
 
     // run forever
     futures::future::pending::<()>().await;

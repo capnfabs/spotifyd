@@ -54,7 +54,7 @@ pub struct AudioSetup {
 
 pub struct SpotifydState {
     // TODO: this ain't a stream anymore, rename
-    pub ctrl_c_stream: Pin<Box<dyn Future<Output = Result<(), io::Error>>>>,
+    pub ctrl_c_signal: Pin<Box<dyn Future<Output = Result<(), io::Error>>>>,
     pub shutting_down: bool,
     pub cache: Option<Cache>,
     pub device_name: String,
@@ -67,15 +67,17 @@ pub struct SpotifydState {
 #[allow(clippy::unnecessary_wraps)]
 fn new_dbus_server(
     session: Session,
+    player_event_channel: Pin<Box<dyn Stream<Item = PlayerEvent>>>,
     spirc: Arc<Spirc>,
     device_name: String,
 ) -> Option<Pin<Box<dyn Future<Output = ()>>>> {
-    Some(Box::pin(dbus_server(session.clone(), spirc, device_name)))
+    Some(Box::pin(dbus_server(session.clone(), player_event_channel, spirc, device_name)))
 }
 
 #[cfg(not(feature = "dbus_mpris"))]
 fn new_dbus_server(
     _: Session,
+    _: Pin<Box<dyn Stream<Item = PlayerEvent>>>,
     _: Arc<Spirc>,
     _: String,
 ) -> Option<Pin<Box<dyn Future<Output = ()>>>> {
@@ -163,8 +165,10 @@ impl Future for MainLoopState {
                     move || (backend)(audio_device, AudioFormat::default()),
                 );
 
-                self.spotifyd_state.player_event_channel =
-                    Some(Box::pin(UnboundedReceiverStream::new(event_channel)));
+                let stream = Box::pin(UnboundedReceiverStream::new(event_channel));
+                // Could also use the flo_stream crate for this
+                let (event_channel_a, event_channel_b) = gabelung::new(stream);
+                self.spotifyd_state.player_event_channel = Some(Box::pin(event_channel_a));
 
                 let (spirc, spirc_task) = Spirc::new(
                     ConnectConfig {
@@ -185,11 +189,12 @@ impl Future for MainLoopState {
                 if self.use_mpris {
                     self.spotifyd_state.dbus_mpris_server = new_dbus_server(
                         session,
+                        Box::pin(event_channel_b),
                         shared_spirc,
                         self.spotifyd_state.device_name.clone(),
                     );
                 }
-            } else if let Poll::Ready(_) = self.spotifyd_state.ctrl_c_stream.as_mut().poll(cx) {
+            } else if let Poll::Ready(_) = self.spotifyd_state.ctrl_c_signal.as_mut().poll(cx) {
                 if !self.spotifyd_state.shutting_down {
                     if let Some(ref spirc) = self.librespot_connection.spirc {
                         spirc.shutdown();

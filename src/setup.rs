@@ -134,7 +134,7 @@ pub(crate) fn initial_state(config: config::SpotifydConfig) -> main_loop::MainLo
             audio_device: config.audio_device.clone(),
         },
         spotifyd_state: main_loop::SpotifydState {
-            ctrl_c_stream: Box::pin(ctrl_c()),
+            ctrl_c_signal: Box::pin(ctrl_c()),
             shutting_down: false,
             cache,
             device_name: config.device_name,
