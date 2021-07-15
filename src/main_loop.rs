@@ -71,7 +71,12 @@ fn new_dbus_server(
     spirc: Arc<Spirc>,
     device_name: String,
 ) -> Option<Pin<Box<dyn Future<Output = ()>>>> {
-    Some(Box::pin(dbus_server(session.clone(), player_event_channel, spirc, device_name)))
+    Some(Box::pin(dbus_server(
+        session.clone(),
+        player_event_channel,
+        spirc,
+        device_name,
+    )))
 }
 
 #[cfg(not(feature = "dbus_mpris"))]
@@ -170,7 +175,7 @@ impl Future for MainLoopState {
                 let (event_channel_a, event_channel_b) = gabelung::new(stream);
                 self.spotifyd_state.player_event_channel = Some(Box::pin(event_channel_a));
 
-                let (spirc, spirc_task) = Spirc::new(
+                let (spirc, spirc_task, _) = Spirc::new(
                     ConnectConfig {
                         autoplay: self.autoplay,
                         name: self.spotifyd_state.device_name.clone(),

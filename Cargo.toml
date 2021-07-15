@@ -35,7 +35,8 @@ tokio-compat-02 = "0.2.0"
 tokio-stream = "0.1.7"
 url = "1.7"
 xdg = "2.2"
-librespot = { version = "0.2.0", default-features = false, features = ["with-tremor"] }
+# TODO: reintegrate my changes into librespot
+librespot = { path="../librespot", version = "0.2.0", default-features = false, features = ["with-tremor"] }
 toml = "0.5.8"
 color-eyre = "0.5"
 
