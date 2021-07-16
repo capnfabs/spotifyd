@@ -24,6 +24,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use tokio_stream::wrappers::UnboundedReceiverStream;
+use librespot::connect::spirc::{ContextChangedEventChannel, ContextChangedEvent};
 
 pub struct LibreSpotConnection {
     connection: Pin<Box<dyn Future<Output = Result<Session, SessionError>>>>,
@@ -68,12 +69,14 @@ pub struct SpotifydState {
 fn new_dbus_server(
     session: Session,
     player_event_channel: Pin<Box<dyn Stream<Item = PlayerEvent>>>,
+    context_event_channel: Pin<Box<dyn Stream<Item = ContextChangedEvent>>>,
     spirc: Arc<Spirc>,
     device_name: String,
 ) -> Option<Pin<Box<dyn Future<Output = ()>>>> {
     Some(Box::pin(dbus_server(
         session.clone(),
         player_event_channel,
+        context_event_channel,
         spirc,
         device_name,
     )))
@@ -83,6 +86,7 @@ fn new_dbus_server(
 fn new_dbus_server(
     _: Session,
     _: Pin<Box<dyn Stream<Item = PlayerEvent>>>,
+    _: ContextChangedEventChannel,
     _: Arc<Spirc>,
     _: String,
 ) -> Option<Pin<Box<dyn Future<Output = ()>>>> {
@@ -175,7 +179,7 @@ impl Future for MainLoopState {
                 let (event_channel_a, event_channel_b) = gabelung::new(stream);
                 self.spotifyd_state.player_event_channel = Some(Box::pin(event_channel_a));
 
-                let (spirc, spirc_task, _) = Spirc::new(
+                let (spirc, spirc_task, context_events) = Spirc::new(
                     ConnectConfig {
                         autoplay: self.autoplay,
                         name: self.spotifyd_state.device_name.clone(),
@@ -195,6 +199,7 @@ impl Future for MainLoopState {
                     self.spotifyd_state.dbus_mpris_server = new_dbus_server(
                         session,
                         Box::pin(event_channel_b),
+                        Box::pin(UnboundedReceiverStream::new(context_events)),
                         shared_spirc,
                         self.spotifyd_state.device_name.clone(),
                     );

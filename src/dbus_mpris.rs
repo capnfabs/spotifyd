@@ -8,7 +8,7 @@ use librespot::{
     connect::spirc::Spirc,
     core::{keymaster::get_token, session::Session},
 };
-use log::{error, info};
+use log::{error, info, debug};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use rspotify::spotify::{
     client::Spotify, model::offset::for_position, oauth2::TokenInfo as RspotifyToken,
@@ -25,6 +25,7 @@ use librespot::metadata::{Track, Metadata};
 use rspotify::spotify::senum::RepeatState;
 use librespot::core::mercury::MercuryError;
 use dbus::MethodErr;
+use librespot::connect::spirc::{ContextChangedEventChannel, ContextChangedEvent};
 
 const CLIENT_ID: &str = "2c1ea588dfbc4a989e2426f8385297c3";
 const SCOPE: &str = "user-read-playback-state,user-read-private,\
@@ -36,7 +37,12 @@ const SCOPE: &str = "user-read-playback-state,user-read-private,\
 
 const TOKEN_EXPIRY_SAFETY_SEC: u64 = 100;
 
-pub async fn dbus_server(session: Session, player_event_channel: Pin<Box<dyn Stream<Item = PlayerEvent>>>, spirc: Arc<Spirc>, device_name: String) {
+pub async fn dbus_server(
+    session: Session,
+    player_event_channel: Pin<Box<dyn Stream<Item = PlayerEvent>>>,
+    context_event_channel: Pin<Box<dyn Stream<Item = ContextChangedEvent>>>,
+    spirc: Arc<Spirc>,
+    device_name: String) {
     let session = &session;
     let token = refresh_token(session)
         .await
@@ -46,7 +52,7 @@ pub async fn dbus_server(session: Session, player_event_channel: Pin<Box<dyn Str
     ));
     tokio::pin!(token_expiry);
     let locked_token = Arc::new(Mutex::new(token));
-    let dbus_future = create_dbus_server(locked_token.clone(), session.clone(), player_event_channel, spirc, device_name);
+    let dbus_future = create_dbus_server(locked_token.clone(), session.clone(), player_event_channel, context_event_channel, spirc, device_name);
     tokio::pin!(dbus_future);
     loop {
         select! {
@@ -76,6 +82,7 @@ async fn create_dbus_server(
     api_token: Arc<Mutex<RspotifyToken>>,
     session: Session,
     mut player_event_channel: Pin<Box<dyn Stream<Item=PlayerEvent>>>,
+    mut context_event_channel: Pin<Box<dyn Stream<Item = ContextChangedEvent>>>,
     spirc: Arc<Spirc>,
     device_name: String,
 ) {
@@ -230,7 +237,7 @@ async fn create_dbus_server(
         b.property("PlaybackStatus")
             .emits_changed_false()
             .get(|_, data| {
-                Ok(data.playback_status())
+                Ok(data.playback_state.playback_status())
             });
 
         let mv_api_token = api_token.clone();
@@ -249,14 +256,8 @@ async fn create_dbus_server(
         b.property("Rate").emits_changed_const().get(|_, _| Ok(1.0));
 
         let mv_api_token = api_token.clone();
-        b.property("Volume").emits_changed_false().get(move |_, _| {
-            let sp = create_spotify_api(&mv_api_token);
-            let vol = sp
-                .current_playback(None)
-                .ok()
-                .flatten()
-                .map_or(0.0, |p| p.device.volume_percent as f64);
-            Ok(vol)
+        b.property("Volume").emits_changed_false().get(|_, data| {
+            Ok( data.volume as f64 / u16::MAX as f64 )
         });
 
         b.property("MaximumRate")
@@ -287,7 +288,7 @@ async fn create_dbus_server(
         b.property("Position")
             .emits_changed_false()
             .get(|_, data| {
-                let res = match data.playback_position() {
+                let res = match data.playback_state.playback_position() {
                     None => { 0 }
                     Some(dur) => { dur.as_micros() as u64 }
                 };
@@ -298,7 +299,7 @@ async fn create_dbus_server(
         b.property("Metadata")
             .emits_changed_false()
             .get(|_, data| {
-                match data.track_metadata() {
+                match data.playback_state.track_metadata() {
                     None => {
                         Err(MethodErr::failed("Couldn't retrieve track data"))
                     }
@@ -333,41 +334,60 @@ async fn create_dbus_server(
         }),
     );
 
-    while let Some(event) = player_event_channel.next().await {
-        println!("Event: {:?}", event);
-        match event {
-            PlayerEvent::Stopped { .. } => {
-                let state = MprisState::STOPPED;
-                *cr.lock().unwrap().data_mut(&dbus::Path::from("/")).unwrap() = state;
-            }
-            PlayerEvent::Playing { position_ms,track_id,.. } => {
-                let track = Track::get(&session, track_id).await;
-                let state = MprisState::PLAYING(PlayingState {
-                    started_instant: Instant::now() - Duration::from_millis(position_ms as u64),
-                    track: track.map(|t| TrackData::from(t)),
-                });
-                *cr.lock().unwrap().data_mut(&dbus::Path::from("/")).unwrap() = state;
-            }
-            PlayerEvent::Paused { position_ms, track_id, .. } => {
-                let track = Track::get(&session, track_id).await;
-                let state = MprisState::PAUSED(PausedState {
-                    position: Duration::from_millis(position_ms as u64),
-                    track: track.map(|t| TrackData::from(t)),
-                });
-                *cr.lock().unwrap().data_mut(&dbus::Path::from("/")).unwrap() = state;
-            }
-            PlayerEvent::Unavailable { .. } => {
-                // TODO: handle?
-            }
-            PlayerEvent::VolumeSet { .. } => {}
-            _ => {}
-        };
+    loop {
+        tokio::select! {
+            event = player_event_channel.next() => {
+                handle_player_event(&session, &cr, event.unwrap()).await;
+            },
+            event = context_event_channel.next() => {
+                handle_context_event(&session, &cr, event.unwrap()).await;
+            },
+        }
     }
+}
 
+async fn handle_player_event(session: &Session, cr: &Arc<Mutex<Crossroads>>, event: PlayerEvent) {
+    debug!("Got player event: {:?}", event);
+    match event {
+        PlayerEvent::Stopped { .. } => {
+            let state = PlaybackState::STOPPED;
+            set_playback_state(&cr, state);
+        }
+        PlayerEvent::Playing { position_ms, track_id, .. } => {
+            let track = Track::get(&session, track_id).await;
+            let state = PlaybackState::PLAYING(PlayingState {
+                started_instant: Instant::now() - Duration::from_millis(position_ms as u64),
+                track: track.map(|t| TrackData::from(t)),
+            });
+            set_playback_state(&cr, state);
+        }
+        PlayerEvent::Paused { position_ms, track_id, .. } => {
+            let track = Track::get(&session, track_id).await;
+            let state = PlaybackState::PAUSED(PausedState {
+                position: Duration::from_millis(position_ms as u64),
+                track: track.map(|t| TrackData::from(t)),
+            });
+            set_playback_state(&cr, state);
+        }
+        PlayerEvent::VolumeSet { volume } => {
+            let mut unlocked = cr.lock().unwrap();
+            let ms: &mut MprisState = unlocked.data_mut(&dbus::Path::from("/")).unwrap();
+            (*ms).volume = volume;
+        }
+        _ => {
+            debug!("Skipped handling");
+        }
+    };
+}
 
-    // run forever
-    futures::future::pending::<()>().await;
-    unreachable!();
+async fn handle_context_event(session: &Session, cr: &Arc<Mutex<Crossroads>>, event: ContextChangedEvent) {
+    debug!("Got context event: {:?}", event);
+}
+
+fn set_playback_state(cr: &Arc<Mutex<Crossroads>>, state: PlaybackState) {
+    let mut unlocked = cr.lock().unwrap();
+    let ms: &mut MprisState = unlocked.data_mut(&dbus::Path::from("/")).unwrap();
+    (*ms).playback_state = state;
 }
 
 #[derive(Clone, Debug)]
@@ -456,24 +476,27 @@ impl TrackData {
     }
 }
 
+#[derive(Clone, Debug)]
 struct PlayingState {
     started_instant: Instant,
     track: Result<TrackData, MercuryError>,
 }
 
+#[derive(Clone, Debug)]
 struct PausedState {
     position: Duration,
     track: Result<TrackData, MercuryError>,
 }
 
-enum MprisState {
+#[derive(Clone, Debug)]
+enum PlaybackState {
     PLAYING(PlayingState),
     PAUSED(PausedState),
     STOPPED,
 }
 
-impl MprisState {
-    fn stopped() -> MprisState {
+impl PlaybackState {
+    fn stopped() -> PlaybackState {
         Self::STOPPED
     }
     fn playback_status(&self) -> String {
@@ -486,25 +509,32 @@ impl MprisState {
 
     fn playback_position(&self) -> Option<Duration> {
         match self {
-            MprisState::PLAYING(state) => Some(Instant::now() - state.started_instant),
-            MprisState::PAUSED(state) => Some(state.position),
-            MprisState::STOPPED => None,
+            PlaybackState::PLAYING(state) => Some(Instant::now() - state.started_instant),
+            PlaybackState::PAUSED(state) => Some(state.position),
+            PlaybackState::STOPPED => None,
         }
     }
 
     fn track_metadata(&self) -> Option<TrackData> {
         match self {
-            MprisState::PLAYING(state) => { state.track.clone().ok() }
-            MprisState::PAUSED(state) => { state.track.clone().ok() }
-            MprisState::STOPPED => { None }
+            PlaybackState::PLAYING(state) => { state.track.clone().ok() }
+            PlaybackState::PAUSED(state) => { state.track.clone().ok() }
+            PlaybackState::STOPPED => { None }
         }
     }
 }
 
-impl Default for MprisState {
+impl Default for PlaybackState {
     fn default() -> Self {
         Self::stopped()
     }
+}
+
+#[derive(Clone, Default, Debug)]
+struct MprisState {
+    playback_state: PlaybackState,
+    // uses the full range of u16, i.e. 0->65535
+    volume: u16,
 }
 
 async fn refresh_token(sess: &Session) -> Option<RspotifyToken> {
